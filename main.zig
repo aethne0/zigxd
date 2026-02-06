@@ -25,7 +25,7 @@ pub fn main() !void {
 
     const stdout = std.fs.File.stdout();
 
-    const bytes_per_line = 16;
+    const bytes_per_line = 32;
     var renderer = Renderer.init(fsize, .{ .bytes_per_line=bytes_per_line });
 
     var file_cursor: usize = offset;
