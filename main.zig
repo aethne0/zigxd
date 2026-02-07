@@ -59,9 +59,6 @@ const Color = enum {
 
     cyan_bright, white_bright,
 
-    reset, bold, dim, italic, underline,
-    blinking, inverse, hidden, strikethrough,
-
     fn asStr(self: Color) []const u8 {
         return switch(self) {
             .black          => "\x1b[30m",
@@ -76,7 +73,16 @@ const Color = enum {
 
             .cyan_bright    => "\x1b[96m",
             .white_bright   => "\x1b[97m",
+        };
+    }
+};
 
+const Style = enum {
+    reset, bold, dim, italic, underline,
+    blinking, inverse, hidden, strikethrough,
+
+    fn asStr(self: Style) []const u8 {
+        return switch(self) {
             .reset          => "\x1b[0m",
             .bold           => "\x1b[1m",
             .dim            => "\x1b[2m",
@@ -90,7 +96,6 @@ const Color = enum {
     }
 };
 
-
 const Renderer = struct {
     nil_line_count: usize,
     offset_digits: usize,
@@ -98,6 +103,9 @@ const Renderer = struct {
     config: Config,
 
     cursor: usize = 0,
+
+    style: Style = Style.reset,
+    color: Color = Color.white,
 
     const Config = struct {
         bytes_per_line: usize = 16,
@@ -124,6 +132,7 @@ const Renderer = struct {
         ascii_postlude: bool = true, 
     };
 
+
     /// The caller is responsible for ensuring line_buffer is sufficiently large.
     /// The Renderer will simply stop inserting bytes if it runs out of space - lines
     /// will effectively be truncated.
@@ -140,16 +149,49 @@ const Renderer = struct {
         };
     }
 
-    fn writeSlice(self: *Renderer, bytes: []const u8) void {
+    // rename this
+    const Ansi = struct {
+        color: Color,
+        style: ?Style = null,
+    };
+
+
+    fn writeSliceInner(self: *Renderer, bytes: []const u8) void {
         assert(bytes.len <= self.buffer.len - self.cursor);
         @memcpy(self.buffer[self.cursor..self.cursor+bytes.len], bytes);
         self.cursor += bytes.len;
     }
 
-    fn writeByte(self: *Renderer, byte: u8) void {
-        assert(self.buffer.len - self.cursor > 0);
-        self.buffer[self.cursor] = byte;
-        self.cursor += 1;
+    fn applyStyle(self: *Renderer, ansi: Ansi) void {
+        if (ansi.style) |style_| {
+            if (style_ != self.style) {
+                // TODO: atm we are doing more work than we need to in non-reset cases
+                self.writeSliceInner(Style.reset.asStr());
+                self.writeSliceInner(style_.asStr());
+                self.style = style_;
+                self.color = Color.white;
+            }
+        } else if (self.style != Style.reset) {
+            self.writeSliceInner(Style.reset.asStr());
+            self.style = Style.reset;
+            self.color = Color.white;
+            return;
+        } 
+
+        if (self.color != ansi.color) {
+            self.writeSliceInner(ansi.color.asStr());
+            self.color = ansi.color;
+        }
+    }
+
+    fn writeSlice(self: *Renderer, bytes: []const u8, ansi: Ansi) void {
+        self.applyStyle(ansi);
+        self.writeSliceInner(bytes);
+    }
+
+    fn writeSliceFmt(self: *Renderer, comptime fmt: []const u8, args: anytype, ansi: Ansi) void {
+        self.applyStyle(ansi);
+        self.cursor += (std.fmt.bufPrint(self.buffer[self.cursor..], fmt, args) catch unreachable).len;
     }
 
     fn byteColor(byte: u8) Color {
@@ -167,8 +209,6 @@ const Renderer = struct {
     ) []u8 {
         self.cursor = 0;
 
-        var prev_color = Color.white;
-
         const nil_line = std.mem.allEqual(u8, bytes, 0);
         if (nil_line) {
             self.nil_line_count += 1;
@@ -179,101 +219,49 @@ const Renderer = struct {
             self.nil_line_count = 0;
         }
 
-        if (self.config.should_style) {
-            self.writeSlice(Color.grey.asStr());
-        }
-
         // offset prefix
-        self.cursor += (
-            std.fmt.bufPrint(
-                self.buffer[self.cursor..], "{x:0>[1]}: ",
-                .{start, self.offset_digits})
-            catch unreachable
-        ).len;
+        self.writeSliceFmt("{x:0>[1]}: ", .{ start, self.offset_digits }, .{ .color=Color.grey });
 
         // if first nil line then print star and return
         if (nil_line) {
-            self.writeSlice(Color.magenta.asStr());
-            self.writeSlice("..\n");
+            self.writeSlice("..\n", .{ .color=Color.magenta });
             return self.buffer[0..self.cursor];
         } 
 
-        // actual bytes
-        if (self.config.should_style) {
-            self.writeSlice(Color.white.asStr());
-        }
-
         for (0..self.config.bytes_per_line) | i| {
             if (i < bytes.len) {
-                const byte = bytes[i];
-
-                if (self.config.should_style) {
-                    const color = byteColor(byte);
-
-                    if (color != prev_color) {
-                        prev_color = color;
-                        self.writeSlice(Color.reset.asStr());
-                        self.writeSlice(color.asStr());
-                    }
-                }
-
-                self.cursor += (
-                    std.fmt.bufPrint(self.buffer[self.cursor..], "{x:0>2}", .{byte}) 
-                    catch unreachable
-                ).len;
+                self.writeSliceFmt("{x:0>2}", .{ bytes[i] }, .{ .color=byteColor(bytes[i]) });
             } else {
-                self.cursor += (
-                    std.fmt.bufPrint(self.buffer[self.cursor..], "  ", .{}) 
-                    catch unreachable
-                ).len;
+                self.writeSlice("  ", .{ .color=byteColor(bytes[i]) });
             }
 
             if (self.config.group_size > 0) {
                 if ((i + 1) % self.config.group_size == 0 and i + 1 < self.config.bytes_per_line) {
-                    self.writeByte(' ');
+                    self.writeSlice(" ", .{ .color=Color.white });
                 }
             }
 
             if (self.config.supergroup_size > 0) {
                 if ((i + 1) % self.config.supergroup_size == 0 and i + 1 < self.config.bytes_per_line) {
-                    self.writeByte(' ');
+                    self.writeSlice(" ", .{ .color=Color.white });
                 }
             }
         }
 
         // ascii-representation postlude
         if (self.config.ascii_postlude) {
-            self.writeSlice("  ");
-
-            if (self.config.should_style) {
-                self.writeSlice(Color.italic.asStr()); 
-                self.writeSlice(Color.dim.asStr()); 
-            }
+            self.writeSlice("  ", .{ .color=Color.white });
 
             for (bytes) |byte| {
-                if (self.config.should_style) {
-                    const color = byteColor(byte);
-
-                    if (color != prev_color) {
-                        prev_color = color;
-                        self.writeSlice(color.asStr());
-                    }
-                }
-
                 if (std.ascii.isAscii(byte) and !std.ascii.isControl(byte)) {
-                    self.writeByte(byte);
+                    self.writeSliceFmt("{c}", .{ byte }, .{ .color=byteColor(byte), .style=Style.dim });
                 } else {
-                    self.writeByte('.');
+                    self.writeSlice(".", .{ .color=byteColor(byte), .style=Style.dim });
                 }
             }
         }
-        
-        if (self.config.should_style) {
-            self.writeSlice(Color.reset.asStr());
-        }
 
-        self.writeByte('\n');
-
+        self.writeSlice("\n", .{ .color=Color.white, .style=Style.reset });
         return self.buffer[0..self.cursor];
     }
 };
