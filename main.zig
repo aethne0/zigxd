@@ -126,7 +126,7 @@ const Renderer = struct {
         /// 4 -> `7f ba 88 44  12 ab 5b 0e  a9 fb 3d 4a  99 88 4b 00`
         /// 8 -> `7f ba 88 44 12 ab 5b 0e  a9 fb 3d 4a 99 88 4b 00`
         /// If supergroup_size <= group_size it will be silly
-        supergroup_size: usize = 0,
+        supergroup_size: usize = 4,
         /// Color output using tty escape sequence. Disable if not a tty.
         should_style: bool = true,
         /// Uppercase hex as opposed to lowercase.
@@ -145,6 +145,8 @@ const Renderer = struct {
         u16_postlude: bool = false, 
         u32_postlude: bool = false, 
         u64_postlude: bool = false, 
+
+        hr_interval: usize = 0x1000,
     };
 
 
@@ -235,6 +237,11 @@ const Renderer = struct {
             self.nil_line_count = 0;
         }
 
+        // hr line 
+        if (self.cfg.hr_interval > 0 and start > 0 and start % self.cfg.hr_interval == 0) {
+            self.writeSlice("───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n", .{.color=Color.white });
+        }
+
         // offset prefix
         if (self.cfg.offset_prelude) {
             self.writeSliceFmt("{x:0>[1]}", .{ start, self.offset_digits }, .{ .color=Color.cyan, .style=Style.italic});
@@ -247,7 +254,7 @@ const Renderer = struct {
             return self.buffer[0..self.cursor];
         } 
 
-        for (0..self.cfg.bytes_per_line) | i| {
+        for (0..self.cfg.bytes_per_line) |i| {
             if (i < bytes.len) {
                 self.writeSliceFmt("{x:0>2}", .{ bytes[i] }, .{ .color=byteColor(bytes[i]) });
             } else {
